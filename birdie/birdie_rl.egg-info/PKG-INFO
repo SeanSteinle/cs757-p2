@@ -1,0 +1,349 @@
+Metadata-Version: 2.2
+Name: birdie-rl
+Version: 0.1.3
+Summary: An automated reward modeling and text-processing pipeline for multi-objective training of language models.
+Author-email: Sam Blouir <samblouir@gmail.com>, "Jimmy T.H. Smith" <jsmith@stanford.edu>, Antonis Anastasopoulos <antonis@gmu.edu>, Amarda Shehu <ashehu@gmu.edu>
+Project-URL: Source, https://github.com/samblouir/birdie
+Project-URL: Tracker, https://github.com/samblouir/birdie/issues
+Project-URL: Homepage, https://github.com/samblouir/birdie
+Requires-Python: >=3.8
+Description-Content-Type: text/markdown
+Requires-Dist: numpy==1.26.4
+Requires-Dist: torch
+Requires-Dist: tiktoken
+Requires-Dist: datasets
+Requires-Dist: accelerate
+
+# Birdie: Reward-driven Automated Curricula
+
+**Birdie** was published at **EMNLP 2024**!
+
+[The latest version of the paper is here available here.](https://github.com/samblouir/birdie/blob/main/Birdie__Advancing_State_Space_Models_with_Reward_Driven_Objectives_and_Curricula.pdf)
+
+Please check out our paper on arXiv: [arXiv:2411.01030](https://arxiv.org/abs/2411.01030).
+
+Birdie RL is an open-source framework designed to automate **multi-objective** training using a **reward-driven** curriculum.
+
+With dynamically mixes of training tasks -- including selective copying, next token prediction, autoencoding, infilling, copying, and prefix-LM -- Birdie automatically attempts to optimize model learning according to a **reward model** that tracks per-objective loss improvements, conditioned on the entire history.
+
+This codebase is designed to be hackable, allowing for swappable reward functions and objectives.
+Currently, decoder-only and causal or prefix-LM **state space models** and **Transformers** are supported.
+Birdie also features **sequence packing** for efficient batching.
+
+### Installation
+   ```bash
+   # For a standard installation
+   pip install git+https://github.com/samblouir/birdie.git
+
+   # To upgrade to the latest version
+   pip install git+https://github.com/samblouir/birdie.git --upgrade --no-deps
+
+   # To re-install and get the latest version
+   pip install git+https://github.com/samblouir/birdie.git --force-reinstall --no-deps
+   ```
+## Usage
+
+Below is a quick start for integrating Birdie RL in your training loop. The data_generator_fn is important. It should be able to return an iterable object for a given split, sharded by worker_id and num_workers, and shuffled using rng_seed.
+
+### Data generator function using HuggingFace's datasets:
+```python
+
+def huggingface_data_generator_fn(split, worker_id, num_workers, rng_seed=0):
+	"""
+	The data_generator function will be called by each dataloading worker.
+	This currently only data parallel training, where each accelerator has its own copy of the model.
+
+	This function should return a generator for a given
+	  - split (e.g., "train", "validation", "test")
+	  - shard defined by by worker_id and num_workers
+	  - shuffle data using rng_seed
+	"""
+
+	# Load the TinyStories dataset from Hugging Face
+	ds = load_dataset("roneneldan/TinyStories", split=split)
+
+	# Shard the dataset among multiple workers
+	ds = ds.shard(num_shards=num_workers, index=worker_id)
+
+	# Shuffle the dataset for randomness
+	ds = ds.shuffle(rng_seed)
+
+	# Return the prepared dataset
+	return ds
+
+
+```
+
+### Data generator function from a list:
+```python
+
+
+def data_generator_fn(split, worker_id, num_workers, rng_seed=0):
+    """
+    The data_generator function will be called by each dataloading worker.
+    This currently only data parallel training, where each accelerator has its own copy of the model.
+
+    This function should return a generator for a given
+    - split (e.g., "train", "validation", "test")
+    - shards it by worker_id and num_workers
+    - shuffles the data using rng_seed
+    """
+
+    ds = dataloader.prepare_dataset_as_list()
+
+    # Load the TinyStories dataset from Hugging Face
+    if split == "train":
+      ds = ds["train"]
+    elif split == "validation":
+      ds = ds['validation']
+
+    # Shard the dataset among multiple workers
+    ds = ds[worker_id::num_workers]
+
+    # Shuffle the dataset for randomness
+    seeded_np_rng = np.random.default_rng(rng_seed)
+    seeded_np_rng.shuffle(ds)
+
+    # Return the prepared dataset
+    return ds
+  ```
+
+### Important: Element grabber function
+   If each element of ds_train looks like this:
+   ```python
+   {
+     "entry": {
+                 "text": "This is a story about a cat.",
+              },
+     "source": "www.facts.com",
+   }
+   ```
+  
+   Then we can make a text_grabber_fn like this to tell the dataloader how to extract the text from each element:
+  ```  
+  def text_grabber_fn(x):
+    return x["entry"]["text"]
+  ```
+
+   Then, pass it to the Birdie in the upcoming "Training code" codeblock.
+
+
+```
+
+### Training code:
+```python
+from birdie_rl import Birdie
+from birdie_rl.example_usage.ul2_config import ul2_config
+import tiktoken
+import accelerate
+
+# Configuration
+config = {
+    "batch_size": 8,
+    "sequence_length": 2048,
+    "num_workers": 16,
+    "steps_between_evaluations": 32,
+    "num_steps": 4096,
+    "accelerator": accelerate.Accelerator(),
+    "tokenizer": tiktoken.get_encoding("o200k_base"),
+    "objectives": ul2_config,
+    "ds": data_generator_fn,  # Provide your dataset fn
+    "reward_fn": your_reward_function,   # Define your custom reward logic
+    "text_grabber_fn": text_grabber_fn,  # Define how to extract text from your dataset in whichever way you want
+}
+
+# Initialize Birdie
+birdie = Birdie(config)
+
+# Training Loop
+for step in range(config["num_steps"]):
+    # Periodic evaluation
+    if birdie.time_for_eval(step):
+        model.eval()
+        for (objective_name, batch) in birdie.measure_validation_losses():
+            loss = model(**batch)  # Inference call
+            birdie.log_validation_loss(key=objective_name, loss=loss, step_idx=step)
+         model.train()
+
+    # Fetch the next training sample from Birdie
+    sample = birdie.get_next_training_sample()
+    loss = model(**sample)
+    ...
+
+```
+
+You can find more detailed examples in:
+- **`example_usage/example.py`** for a minimal script
+- **`example_usage/ul2_config.py`** for UL2-style objectives
+- **`example_usage/utils.py`** for custom reward functions and data generator demos
+
+---
+
+
+<div align="center">
+  <a href="https://github.com/samblouir/birdie/blob/main/birdie_emnlp_2024_poster.jpg?raw=true"><img src="https://github.com/samblouir/birdie/blob/main/birdie_emnlp_2024_poster.jpg?raw=true" alt="Birdie EMNLP 2024 Poster" width="800" /></a>
+</div>
+
+---
+
+## Features & Highlights
+
+- **Automated Multi-Objective Training**  
+  This all-in-one pipeline easily adds an automated curriculum with multi-objective training, including **autoencoding**, **deshuffling**, **infilling**, **copying**, etc. all with customizable parameters.
+
+- **Character-level noising functions**
+   By default, Birdie's noise functions work on the character-level for text. Long inputs are automatically sliced into suitable chunks to fit into your desired maximum sequence length.
+
+- **Reward-Driven Curriculum**  
+  Birdie uses a Transformer reward model to adaptively select objectives, optimizing training based on sub-loss improvements, historical objective mixture rates, and any other factors.
+
+- **Efficient Data Pipeline**  
+  Integrates multi-worker processing and **sequence packing** to reduce wasted compute, boosting effective tokens per second throughput during training.
+
+- **Huggingface Accelerate Support**
+   Birdie is compatible with Huggingface's Accelerate library, allowing for easy scaling to multiple GPUs or TPUs. Birdie currently supports model parallel setups for the dataloader. JAX compatibility to be added soon.
+
+- **Modular Architecture**  
+  Birdie is designed to be hackable. Easily add new objectives, custom reward functions, and other pipeline components to experiment with different strategies.
+
+- **Paper**  
+   Birdie was published at EMNLP 2024, where it brought SSMs and Transformer models to state-of-the-art performance on several tasks, compared to standard next token prediction training.
+
+
+---
+
+## Installation
+
+### Simplest approach
+   ```bash
+   pip install git+https://github.com/samblouir/birdie.git
+   ```
+
+   Please see "example_usage/example.py" for an example of how to use Birdie with your Torch (or, with minimal modifications, JAX) training loop.
+
+## Dataloader Debugging
+
+Data processing issues?
+in *birdie_rl/pipeline/worker.py*, uncomment the print line in this function:
+```python
+  	def print(self, *args, **kwargs):
+      """
+      Helper method to print with worker info.
+      """
+      # print(*args, **kwargs) ## Uncomment this to enable worker debug printing
+      pass
+```
+
+### In-depth Installation Instructions
+
+
+#### Prerequisites
+- Python 3.8+
+- Git
+
+#### Steps
+
+1. **Clone the Repository**  
+   ```bash
+   git clone https://github.com/samblouir/birdie.git
+   cd birdie-rl
+   ```
+
+2. **Install Dependencies**  
+   Birdie RL relies on `numpy`, `torch`, `datasets`, and `accelerate`. Install them via:
+   ```bash
+   pip install -r requirements.txt
+   ```
+   *(Alternatively, manually `pip install numpy torch datasets accelerate`.)*
+
+3. **Verify Setup**  
+   Test everything with a sample script:
+   ```bash
+   python example_usage/example.py
+   ```
+
+---
+
+## Codebase Overview
+
+**Directory Structure** (simplified):
+```
+birdie_rl/
+  birdie_reward_model/
+    birdie.py           # Main Birdie class
+    agent_bird.py       # RL agent logic
+    reward_model.py     # Simplified API for the reward model
+    rotary.py           # Rotary positional encoding utilities
+    gated_ssm_agent.py  # Default Transformer
+  example_usage/
+    example.py          # Minimal usage script
+    ul2_config.py       # UL2-inspired objectives
+    utils.py            # Shows functions Birdie needsreward fn, data gen, etc.
+  objectives/
+    base.py              # BaseObjective class. Shows how to add objectives.
+    selective_copying.py # A new structured-deshuffling objective introduced in Birdie
+    autoencoding.py      # BART-style autoencoding, with deshuffling support
+    infilling.py        
+    copying.py          
+    deshuffling.py      
+    next_token_prediction.py
+    prefix_language_modeling.py
+  pipeline/
+    main_controller.py  # Objective distribution & worker coordination
+    packer_batcher.py   # Sequence packing logic
+    worker.py           # Worker processes to transform data
+    pipeline_generator.py
+  load_objective.py      # Registry for objective loading
+  ...
+```
+
+**Key Components**:
+- **`birdie_reward_model/`**  
+  Hosts the RL agent (`agent_bird.py`), the main Birdie orchestrator (`birdie.py`), and optional gating/MLP code.  
+- **`objectives/`**  
+  Houses all self-supervised tasks (infilling, copying, etc.) derived from `BaseObjective`.
+- **`pipeline/`**  
+  Manages multi-process data generation, sequence packing, and distributing tasks among workers.
+
+---
+
+## Contributing
+
+We **strongly welcome** contributions! Whether it’s a new objective, a fresh reward function, or bug fixes, we appreciate your help in making Birdie RL better.
+
+Please feel free just post in discussion.
+Please open issues for feature requests or bug reports.
+
+Alternatively, you can fork the repository and submit a pull request with your changes. Here’s a quick guide:
+1. Fork the repository  
+2. Create a branch (`git checkout -b feature/awesome-update`)  
+3. Commit your changes (`git commit -m "Add something awesome"`)  
+4. Push & open a Pull Request  
+
+
+---
+
+## License & Citation
+
+Birdie RL is released under the **Apache License 2.0**. See the [LICENSE](https://www.apache.org/licenses/LICENSE-2.0) file for details.
+The intent is to be as permissible as possible for any kind of usage.
+
+If you use (or build on) Birdie RL in your work, kindly cite our **EMNLP 2024** paper:
+
+```bibtex
+@inproceedings{blouir-etal-2024-birdie,
+    title = "Birdie: Advancing State Space Language Modeling with Dynamic Mixtures of Training Objectives",
+    author = "Blouir, Sam and Smith, Jimmy T.H. and Anastasopoulos, Antonios and Shehu, Amarda",
+    booktitle = "Proceedings of the 2024 Conference on Empirical Methods in Natural Language Processing",
+    month = nov,
+    year = "2024",
+    address = "Miami, Florida, USA",
+    publisher = "Association for Computational Linguistics",
+    url = "https://aclanthology.org/2024.emnlp-main.541/",
+    doi = "10.18653/v1/2024.emnlp-main.541",
+    pages = "9679--9705",
+}
+```
+
+
+

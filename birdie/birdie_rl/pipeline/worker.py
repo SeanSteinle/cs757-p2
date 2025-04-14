@@ -29,6 +29,11 @@ def _default_text_source(worker_id: int, total_workers: int):
 		for record in ds:
 			yield record["text"]
 
+def default_text_grabber_fn(x):  
+    try:  
+        return x["text"]  
+    except Exception as e:  
+        print(f"  FAILED: Could not grab the key 'text' from the dataset entry dict: {x}")  
 
 class Worker:
 	"""
@@ -70,15 +75,10 @@ class Worker:
 		self.infinite_loop = infinite_loop
 		self.split = split
 
-		if text_grabber_fn is None:
-			# Default text grabber expects a dataset entry dict with a "text" key to be tokenized.
-			def text_grabber_fn(x):
-				try:
-					return x["text"]
-				except Exception as e:
-					print(f"  FAILED:  Could not grab the key 'text' from the dataset entry dict: {x}")
-
-		self.text_grabber_fn = text_grabber_fn
+		if text_grabber_fn is None:  
+			self.text_grabber_fn = default_text_grabber_fn  
+		else:  
+			self.text_grabber_fn = text_grabber_fn  
 
 		# If no data_generator is provided, use our fallback.
 		if data_generator is None:

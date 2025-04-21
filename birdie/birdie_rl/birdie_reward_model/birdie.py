@@ -353,11 +353,11 @@ class Birdie:
 
 				controller, ds_validation_iter = pipeline_data_generator(
 					data_generator=self.ds_validation,
-					data_generator_fn_kwarg_overrides={"worker_id": 0, "num_workers": 1},
+                    # data_generator_fn_kwarg_overrides={"worker_id": 0, "num_workers": 1},
 					batch_size=self.batch_size,
 					sequence_length=self.validation_sequence_length,
 					objectives_config=[objective],
-					num_workers=1,
+					num_workers=self.num_workers,
 					accelerator=self.accelerator,
 					# move_to_gpu_fn=self.move_to_gpu_fn,
 					infinite_loop=False,
@@ -379,9 +379,9 @@ class Birdie:
 						if 0 < len(current_samples):
 							break
 						else:
-							continue
+							continue                   
 					## Uncomment to see each batch coming in
-					# print(f"  objective: {objective}, objective_idx: {objective_idx},  controller: {controller},  batch: {batch}")
+					print(f"  objective: {objective}, objective_idx: {objective_idx},  controller: {controller},  batch: {batch}")
 					current_samples.append(batch)
 
 				self.validation_ds_per_objective[objective_idx] = {

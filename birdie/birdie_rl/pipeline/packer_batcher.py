@@ -76,7 +76,14 @@ class Packer:
             )
         
         # Append paradigm tokens to input_ids
-        input_ids = np.concatenate([input_ids, self.tokenized_start_generating_paradigm])
+        # Original version:  
+        # input_ids = np.concatenate([input_ids, self.tokenized_start_generating_paradigm])
+        
+        # Fixed version:  
+        if self.tokenized_start_generating_paradigm.ndim == 0:  
+            self.tokenized_start_generating_paradigm = np.array([self.tokenized_start_generating_paradigm])  
+        input_ids = np.concatenate([input_ids, self.tokenized_start_generating_paradigm])          
+        
         self.segment_counter += 1
         
         input_start = self.data_index

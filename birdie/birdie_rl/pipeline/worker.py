@@ -34,7 +34,7 @@ def default_text_grabber_fn(x):
         return x["text"]  
     except Exception as e:  
         print(f"  FAILED: Could not grab the key 'text' from the dataset entry dict: {x}")  
-
+        
 class Worker:
 	"""
 	A Worker process that:
@@ -116,7 +116,7 @@ class Worker:
 		"""
 		This method helps us easily specifically silence worker debug info.
 		"""
-		# print(*args, **kwargs); return; ## Uncomment this to enable all worker debug printing
+		print(*args, **kwargs); return; ## Uncomment this to enable all worker debug printing
 		if min_verbosity_level <= verbosity_level:
 			print(*args, **kwargs) ## Uncomment this to enable worker debug printing
 		pass
